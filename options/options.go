@@ -328,6 +328,8 @@ type TerragruntOptions struct {
 	NoShell bool
 	// NoHooks disables hooks when using boilerplate templates in catalog and scaffold commands.
 	NoHooks bool
+	// DryRun will only run TerraGrunt but not Terraform
+	DryRun bool
 }
 
 // TerragruntOptionsFunc is a functional option type used to pass options in certain integration tests
@@ -436,6 +438,7 @@ func NewTerragruntOptionsWithWriters(stdout, stderr io.Writer) *TerragruntOption
 		NoDependencyPrompt:         false,
 		NoShell:                    false,
 		NoHooks:                    false,
+		DryRun:                     true,
 	}
 }
 

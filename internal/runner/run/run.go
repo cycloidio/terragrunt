@@ -336,6 +336,12 @@ func runTerragruntWithConfig(
 		return err
 	}
 
+	// Only check dry-run for non-headless mode to avoid duplicate logs during auto-init
+	if opts.DryRun && !opts.Headless {
+		l.Info("Dry-run mode enabled: Terragrunt validation complete, skipping Terraform/OpenTofu execution")
+		return nil
+	}
+
 	return RunActionWithHooks(ctx, l, "terraform", opts, cfg, r, func(ctx context.Context) error {
 		// Execute the underlying command once; retries and ignores are handled by outer RunWithErrorHandling
 		out, runTerraformError := tf.RunCommandWithOutput(ctx, l, opts, opts.TerraformCliArgs...)

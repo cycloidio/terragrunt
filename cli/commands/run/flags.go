@@ -29,6 +29,7 @@ const (
 
 	DisableCommandValidationFlagName   = "disable-command-validation"
 	NoDestroyDependenciesCheckFlagName = "no-destroy-dependencies-check"
+	TerragruntDryRunFlagName           = "terragrunt-dry-run"
 
 	SourceFlagName       = "source"
 	SourceMapFlagName    = "source-map"
@@ -264,6 +265,14 @@ func NewFlags(l log.Logger, opts *options.TerragruntOptions, prefix flags.Prefix
 			Usage:       "When this flag is set, Terragrunt will not check for dependent units when destroying.",
 		},
 			flags.WithDeprecatedEnvVars(terragruntPrefix.EnvVars("no-destroy-dependencies-check"), terragruntPrefixControl)),
+
+		flags.NewFlag(&cli.BoolFlag{
+			Name:        TerragruntDryRunFlagName,
+			EnvVars:     tgPrefix.EnvVars(TerragruntDryRunFlagName),
+			Destination: &opts.DryRun,
+			Usage:       "Run only Terragrunt validation checks (version constraints) without executing Terraform/OpenTofu commands.",
+		},
+			flags.WithDeprecatedEnvVars(terragruntPrefix.EnvVars("dry-run"), terragruntPrefixControl)),
 
 		// Terragrunt Provider Cache flags.
 
