@@ -246,6 +246,8 @@ func parseTerragruntOptionsFromArgs(terragruntVersion string, args []string, wri
 		return nil, err
 	}
 
+	opts.DryRun = parseBooleanArg(args, optTerragruntDryRun, false)
+
 	return opts, nil
 }
 

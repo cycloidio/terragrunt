@@ -211,6 +211,9 @@ type TerragruntOptions struct {
 
 	// Controls if s3 bucket should be updated or skipped
 	DisableBucketUpdate bool
+
+	// DryRun will only run TerraGrunt but not Terraform
+	DryRun bool
 }
 
 // IAMOptions represents options that are used by Terragrunt to assume an IAM role.
@@ -296,6 +299,7 @@ func NewTerragruntOptions(terragruntConfigPath string) (*TerragruntOptions, erro
 		RunTerragrunt: func(terragruntOptions *TerragruntOptions) error {
 			return errors.WithStackTrace(RunTerragruntCommandNotSet)
 		},
+		DryRun: true,
 	}, nil
 }
 
@@ -393,6 +397,7 @@ func (terragruntOptions *TerragruntOptions) Clone(terragruntConfigPath string) *
 		IncludeModulePrefix:            terragruntOptions.IncludeModulePrefix,
 		FailIfBucketCreationRequired:   terragruntOptions.FailIfBucketCreationRequired,
 		DisableBucketUpdate:            terragruntOptions.DisableBucketUpdate,
+		DryRun:                         terragruntOptions.DryRun,
 	}
 }
 

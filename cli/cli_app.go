@@ -67,6 +67,7 @@ const (
 	optTerragruntFailOnStateBucketCreation      = "terragrunt-fail-on-state-bucket-creation"
 	optTerragruntDisableBucketUpdate            = "terragrunt-disable-bucket-update"
 	optTerragruntOutputWithMetadata             = "with-metadata"
+	optTerragruntDryRun                         = "terragrunt-dry-run"
 )
 
 var allTerragruntBooleanOpts = []string{
@@ -89,6 +90,7 @@ var allTerragruntBooleanOpts = []string{
 	optTerragruntIncludeModulePrefix,
 	optTerragruntFailOnStateBucketCreation,
 	optTerragruntDisableBucketUpdate,
+	optTerragruntDryRun,
 }
 var allTerragruntStringOpts = []string{
 	optTerragruntConfig,
@@ -278,6 +280,7 @@ GLOBAL OPTIONS:
    terragrunt-include-module-prefix             When this flag is set output from Terraform sub-commands is prefixed with module path.
    terragrunt-fail-on-state-bucket-creation     When this flag is set Terragrunt will fail if the remote state bucket needs to be created.
    terragrunt-disable-bucket-update             When this flag is set Terragrunt will not update the remote state bucket.
+   terragrunt-dry-run														When this flag is set only Terragrunt is ran, not Terraform
 
 VERSION:
    {{.Version}}{{if len .Authors}}
@@ -410,8 +413,10 @@ func RunTerragrunt(terragruntOptions *options.TerragruntOptions) error {
 		return runGraphDependencies(terragruntOptions)
 	}
 
-	if err := checkVersionConstraints(terragruntOptions); err != nil {
-		return err
+	if !terragruntOptions.DryRun {
+		if err := checkVersionConstraints(terragruntOptions); err != nil {
+			return err
+		}
 	}
 
 	terragruntConfig, err := config.ReadTerragruntConfig(terragruntOptions)
@@ -543,7 +548,11 @@ func RunTerragrunt(terragruntOptions *options.TerragruntOptions) error {
 			return nil
 		}
 	}
-	return runTerragruntWithConfig(terragruntOptions, updatedTerragruntOptions, terragruntConfig, false)
+
+	if !terragruntOptions.DryRun {
+		return runTerragruntWithConfig(terragruntOptions, updatedTerragruntOptions, terragruntConfig, false)
+	}
+	return nil
 }
 
 func generateConfig(terragruntConfig *config.TerragruntConfig, updatedTerragruntOptions *options.TerragruntOptions) error {
