@@ -1,10 +1,12 @@
-package util
+package util_test
 
 import (
 	"math"
 	"reflect"
+	"strconv"
 	"testing"
 
+	"github.com/gruntwork-io/terragrunt/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -12,7 +14,7 @@ func TestKindOf(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		value    interface{}
+		value    any
 		expected reflect.Kind
 	}{
 		{1, reflect.Int},
@@ -23,13 +25,17 @@ func TestKindOf(t *testing.T) {
 		{nil, reflect.Invalid},
 		{"Hello World!", reflect.String},
 		{new(string), reflect.Ptr},
-		{*new(string), reflect.String},
-		{interface{}(false), reflect.Bool},
+		{"", reflect.String},
+		{any(false), reflect.Bool},
 	}
-	for _, testCase := range testCases {
-		actual := KindOf(testCase.value).String()
-		assert.Equal(t, testCase.expected.String(), actual, "For value %v", testCase.value)
-		t.Logf("%v passed", testCase.value)
+	for i, tc := range testCases {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			t.Parallel()
+
+			actual := util.KindOf(tc.value).String()
+			assert.Equal(t, tc.expected.String(), actual, "For value %v", tc.value)
+			t.Logf("%v passed", tc.value)
+		})
 	}
 }
 
@@ -37,9 +43,9 @@ func TestMustWalkTerraformOutput(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		value    interface{}
+		value    any
+		expected any
 		path     []string
-		expected interface{}
 	}{
 		{
 			value: map[string]map[string]string{
@@ -71,8 +77,12 @@ func TestMustWalkTerraformOutput(t *testing.T) {
 		},
 	}
 
-	for _, testCase := range testCases {
-		actual := MustWalkTerraformOutput(testCase.value, testCase.path...)
-		assert.Equal(t, testCase.expected, actual)
+	for i, tc := range testCases {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			t.Parallel()
+
+			actual := util.MustWalkTerraformOutput(tc.value, tc.path...)
+			assert.Equal(t, tc.expected, actual)
+		})
 	}
 }

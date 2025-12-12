@@ -5,107 +5,89 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclparse"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 
-	"github.com/gruntwork-io/terragrunt/errors"
-	"github.com/gruntwork-io/terragrunt/options"
-	"github.com/gruntwork-io/terragrunt/util"
+	"maps"
+
+	"github.com/gruntwork-io/terragrunt/config/hclparse"
+	"github.com/gruntwork-io/terragrunt/internal/errors"
+	"github.com/gruntwork-io/terragrunt/pkg/log"
 )
 
 // MaxIter is the maximum number of depth we support in recursively evaluating locals.
 const MaxIter = 1000
 
-// Detailed error messages in diagnostics returned by parsing locals
-const (
-	// A consistent detail message for all "not a valid identifier" diagnostics. This is exactly the same as that returned
-	// by terraform.
-	badIdentifierDetail = "A name must start with a letter and may contain only letters, digits, underscores, and dashes."
-
-	// A consistent error message for multiple locals block in terragrunt config (which is currently not supported)
-	multipleLocalsBlockDetail = "Terragrunt currently does not support multiple locals blocks in a single config. Consolidate to a single locals block."
-)
-
-// Local represents a single local name binding. This holds the unevaluated expression, extracted from the parsed file
-// (but before decoding) so that we can look for references to other locals before evaluating.
-type Local struct {
-	Name string
-	Expr hcl.Expression
-}
-
-// evaluateLocalsBlock is a routine to evaluate the locals block in a way to allow references to other locals. This
+// EvaluateLocalsBlock is a routine to evaluate the locals block in a way to allow references to other locals. This
 // will:
 //   - Extract a reference to the locals block from the parsed file
-//   - Continuously evaluate the block until all references are evaluated, defering evaluation of anything that references
+//   - Continuously evaluate the block until all references are evaluated, deferring evaluation of anything that references
 //     other locals until those references are evaluated.
 //
 // This returns a map of the local names to the evaluated expressions (represented as `cty.Value` objects). This will
 // error if there are remaining unevaluated locals after all references that can be evaluated has been evaluated.
-func evaluateLocalsBlock(
-	terragruntOptions *options.TerragruntOptions,
-	parser *hclparse.Parser,
-	hclFile *hcl.File,
-	filename string,
-	trackInclude *TrackInclude,
-	decodeList []PartialDecodeSectionType,
-) (map[string]cty.Value, error) {
-	diagsWriter := util.GetDiagnosticsWriter(terragruntOptions.Logger, parser)
-
-	localsBlock, diags := getLocalsBlock(hclFile)
-	if diags.HasErrors() {
-		diagsWriter.WriteDiagnostics(diags)
-		return nil, errors.WithStackTrace(diags)
+func EvaluateLocalsBlock(ctx *ParsingContext, l log.Logger, file *hclparse.File) (map[string]cty.Value, error) {
+	localsBlock, err := file.Blocks(MetadataLocals, false)
+	if err != nil {
+		return nil, err
 	}
-	if localsBlock == nil {
+
+	if len(localsBlock) == 0 {
 		// No locals block referenced in the file
-		terragruntOptions.Logger.Debugf("Did not find any locals block: skipping evaluation.")
+		l.Debugf("Did not find any locals block: skipping evaluation.")
 		return nil, nil
 	}
 
-	terragruntOptions.Logger.Debugf("Found locals block: evaluating the expressions.")
+	l.Debugf("Found locals block: evaluating the expressions.")
 
-	locals, diags := decodeLocalsBlock(localsBlock)
-	if diags.HasErrors() {
-		terragruntOptions.Logger.Errorf("Encountered error while decoding locals block into name expression pairs.")
-		diagsWriter.WriteDiagnostics(diags)
-		return nil, errors.WithStackTrace(diags)
+	attrs, err := localsBlock[0].JustAttributes()
+	if err != nil {
+		l.Debugf("Encountered error while decoding locals block into name expression pairs.")
+		return nil, err
 	}
 
 	// Continuously attempt to evaluate the locals until there are no more locals to evaluate, or we can't evaluate
 	// further.
 	evaluatedLocals := map[string]cty.Value{}
 	evaluated := true
-	for iterations := 0; len(locals) > 0 && evaluated; iterations++ {
+
+	for iterations := 0; len(attrs) > 0 && evaluated; iterations++ {
 		if iterations > MaxIter {
 			// Reached maximum supported iterations, which is most likely an infinite loop bug so cut the iteration
 			// short an return an error.
-			return nil, errors.WithStackTrace(MaxIterError{})
+			return nil, errors.New(MaxIterError{})
 		}
 
 		var err error
-		locals, evaluatedLocals, evaluated, err = attemptEvaluateLocals(
-			terragruntOptions,
-			filename,
-			locals,
+
+		attrs, evaluatedLocals, evaluated, err = attemptEvaluateLocals(
+			ctx,
+			l,
+			file,
+			attrs,
 			evaluatedLocals,
-			trackInclude,
-			decodeList,
-			diagsWriter,
 		)
 		if err != nil {
-			terragruntOptions.Logger.Errorf("Encountered error while evaluating locals in file %s", filename)
-			return nil, err
+			l.Debugf("Encountered error while evaluating locals in file %s", ctx.TerragruntOptions.TerragruntConfigPath)
+			return evaluatedLocals, err
 		}
 	}
-	if len(locals) > 0 {
+
+	if len(attrs) > 0 {
 		// This is an error because we couldn't evaluate all locals
-		terragruntOptions.Logger.Errorf("Not all locals could be evaluated:")
-		for _, local := range locals {
-			_, reason := canEvaluate(terragruntOptions, local.Expr, evaluatedLocals)
-			terragruntOptions.Logger.Errorf("\t- %s [REASON: %s]", local.Name, reason)
+		l.Debugf("Not all locals could be evaluated:")
+
+		var errs *errors.MultiError
+
+		for _, attr := range attrs {
+			diags := canEvaluateLocals(attr.Expr, evaluatedLocals)
+			if err := file.HandleDiagnostics(diags); err != nil {
+				errs = errs.Append(err)
+			}
 		}
-		return nil, errors.WithStackTrace(CouldNotEvaluateAllLocalsError{})
+
+		if err := errs.ErrorOrNil(); err != nil {
+			return nil, errors.New(CouldNotEvaluateAllLocalsError{Err: err})
+		}
 	}
 
 	return evaluatedLocals, nil
@@ -118,152 +100,127 @@ func evaluateLocalsBlock(
 // - whether or not any locals were evaluated in this attempt
 // - any errors from the evaluation
 func attemptEvaluateLocals(
-	terragruntOptions *options.TerragruntOptions,
-	filename string,
-	locals []*Local,
+	ctx *ParsingContext,
+	l log.Logger,
+	file *hclparse.File,
+	attrs hclparse.Attributes,
 	evaluatedLocals map[string]cty.Value,
-	trackInclude *TrackInclude,
-	decodeList []PartialDecodeSectionType,
-	diagsWriter hcl.DiagnosticWriter,
-) (unevaluatedLocals []*Local, newEvaluatedLocals map[string]cty.Value, evaluated bool, err error) {
-	// The HCL2 parser and especially cty conversions will panic in many types of errors, so we have to recover from
-	// those panics here and convert them to normal errors
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = errors.WithStackTrace(
-				PanicWhileParsingConfig{
-					RecoveredValue: recovered,
-					ConfigFile:     filename,
-				},
-			)
-		}
-	}()
-
-	evaluatedLocalsAsCty, err := convertValuesMapToCtyVal(evaluatedLocals)
+) (unevaluatedAttrs hclparse.Attributes, newEvaluatedLocals map[string]cty.Value, evaluated bool, err error) {
+	localsAsCtyVal, err := ConvertValuesMapToCtyVal(evaluatedLocals)
 	if err != nil {
-		terragruntOptions.Logger.Errorf("Could not convert evaluated locals to the execution context to evaluate additional locals in file %s", filename)
+		l.Errorf("Could not convert evaluated locals to the execution ctx to evaluate additional locals in file %s", file.ConfigPath)
 		return nil, evaluatedLocals, false, err
 	}
-	evalCtx, err := CreateTerragruntEvalContext(
-		filename,
-		terragruntOptions,
-		EvalContextExtensions{
-			TrackInclude:           trackInclude,
-			Locals:                 &evaluatedLocalsAsCty,
-			PartialParseDecodeList: decodeList,
-		},
-	)
+
+	ctx.Locals = &localsAsCtyVal
+
+	evalCtx, err := createTerragruntEvalContext(ctx, l, file.ConfigPath)
 	if err != nil {
-		terragruntOptions.Logger.Errorf("Could not convert include to the execution context to evaluate additional locals in file %s", filename)
+		l.Errorf("Could not convert include to the execution ctx to evaluate additional locals in file %s", file.ConfigPath)
 		return nil, evaluatedLocals, false, err
 	}
 
 	// Track the locals that were evaluated for logging purposes
 	newlyEvaluatedLocalNames := []string{}
 
-	unevaluatedLocals = []*Local{}
+	unevaluatedAttrs = hclparse.Attributes{}
 	evaluated = false
-	newEvaluatedLocals = map[string]cty.Value{}
-	for key, val := range evaluatedLocals {
-		newEvaluatedLocals[key] = val
-	}
-	for _, local := range locals {
-		localEvaluated, _ := canEvaluate(terragruntOptions, local.Expr, evaluatedLocals)
-		if localEvaluated {
-			evaluatedVal, diags := local.Expr.Value(evalCtx)
-			if diags.HasErrors() {
-				diagsWriter.WriteDiagnostics(diags)
-				return nil, evaluatedLocals, false, errors.WithStackTrace(diags)
+
+	newEvaluatedLocals = make(map[string]cty.Value, len(evaluatedLocals))
+	maps.Copy(newEvaluatedLocals, evaluatedLocals)
+
+	errs := &errors.MultiError{}
+
+	for _, attr := range attrs {
+		if diags := canEvaluateLocals(attr.Expr, evaluatedLocals); !diags.HasErrors() {
+			evaluatedVal, err := attr.Value(evalCtx)
+			if err != nil {
+				errs = errs.Append(err)
+				continue
 			}
-			newEvaluatedLocals[local.Name] = evaluatedVal
-			newlyEvaluatedLocalNames = append(newlyEvaluatedLocalNames, local.Name)
+
+			newEvaluatedLocals[attr.Name] = evaluatedVal
+
+			newlyEvaluatedLocalNames = append(newlyEvaluatedLocalNames, attr.Name)
 			evaluated = true
 		} else {
-			unevaluatedLocals = append(unevaluatedLocals, local)
+			unevaluatedAttrs = append(unevaluatedAttrs, attr)
 		}
 	}
 
-	terragruntOptions.Logger.Debugf(
+	l.Debugf(
 		"Evaluated %d locals (remaining %d): %s",
 		len(newlyEvaluatedLocalNames),
-		len(unevaluatedLocals),
+		len(unevaluatedAttrs),
 		strings.Join(newlyEvaluatedLocalNames, ", "),
 	)
-	return unevaluatedLocals, newEvaluatedLocals, evaluated, nil
+
+	return unevaluatedAttrs, newEvaluatedLocals, evaluated, errs.ErrorOrNil()
 }
 
-// canEvaluate determines if the local expression can be evaluated. An expression can be evaluated if one of the
+// canEvaluateLocals determines if the local expression can be evaluated. An expression can be evaluated if one of the
 // following is true:
 // - It has no references to other locals.
 // - It has references to other locals that have already been evaluated.
 // Note that the second return value is a human friendly reason for why the expression can not be evaluated, and is
 // useful for error reporting.
-func canEvaluate(
-	terragruntOptions *options.TerragruntOptions,
-	expression hcl.Expression,
-	evaluatedLocals map[string]cty.Value,
-) (bool, string) {
-	vars := expression.Variables()
-	if len(vars) == 0 {
-		// If there are no local variable references, we can evaluate this expression.
-		return true, ""
-	}
+func canEvaluateLocals(expression hcl.Expression, evaluatedLocals map[string]cty.Value) hcl.Diagnostics {
+	var diags hcl.Diagnostics
 
-	for _, var_ := range vars {
-		// This should never happen, but if it does, we can't evaluate this expression.
-		if var_.IsRelative() {
-			reason := "You've reached an impossible condition and is almost certainly a bug in terragrunt. Please open an issue at github.com/gruntwork-io/terragrunt with this message and the contents of your terragrunt.hcl file that caused this."
-			return false, reason
+	localVars := expression.Variables()
+
+	for _, localVar := range localVars {
+		var (
+			rootName        = localVar.RootName()
+			localName       = getLocalName(localVar)
+			_, hasEvaluated = evaluatedLocals[localName]
+			detail          string
+		)
+
+		switch {
+		case localVar.IsRelative():
+			// This should never happen, but if it does, we can't evaluate this expression.
+			detail = "This caused an impossible condition, tnis is almost certainly a bug in Terragrunt. Please open an issue at github.com/gruntwork-io/terragrunt with this message and the contents of your terragrunt.hcl file that caused this."
+
+		case rootName == MetadataInclude:
+			// If the variable is `include`, then we can evaluate it now
+
+		case rootName == MetadataFeatureFlag:
+			// If the variable is `feature`
+
+		case rootName == MetadataValues:
+			// If the variable is `values`
+
+		case rootName != "local":
+			// We can't evaluate any variable other than `local`
+			detail = fmt.Sprintf("You can only reference to other local variables here, but it looks like you're referencing something else (%q is not defined)", rootName)
+
+		case localName == "":
+			// If we can't get any local name, we can't evaluate it.
+			detail = "This local var name can not be determined."
+
+		case !hasEvaluated:
+			// If the referenced local isn't evaluated, we can't evaluate this expression.
+			detail = fmt.Sprintf("The local reference '%s' is not evaluated. Either it is not ready yet in the current pass, or there was an error evaluating it in an earlier stage.", localName)
 		}
 
-		rootName := var_.RootName()
-
-		// If the variable is `include`, then we can evaluate it now
-		if rootName == "include" {
-			continue
-		}
-
-		// We can't evaluate any variable other than `local`
-		if rootName != "local" {
-			reason := fmt.Sprintf(
-				"Can't evaluate expression at %s: you can only reference other local variables here, but it looks like you're referencing something else (%s is not defined)",
-				expression.Range(),
-				rootName,
-			)
-			return false, reason
-		}
-
-		// If we can't get any local name, we can't evaluate it.
-		localName := getLocalName(terragruntOptions, var_)
-		if localName == "" {
-			reason := fmt.Sprintf(
-				"Can't evaluate expression at %s because local var name can not be determined.",
-				expression.Range(),
-			)
-			return false, reason
-		}
-
-		// If the referenced local isn't evaluated, we can't evaluate this expression.
-		_, hasEvaluated := evaluatedLocals[localName]
-		if !hasEvaluated {
-			reason := fmt.Sprintf(
-				"Can't evaluate expression at %s because local reference '%s' is not evaluated. Either it is not ready yet in the current pass, or there was an error evaluating it in an earlier stage.",
-				expression.Range(),
-				localName,
-			)
-			return false, reason
+		if detail != "" {
+			diags = diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Can't evaluate expression",
+				Detail:   detail,
+				Subject:  expression.Range().Ptr(),
+			})
 		}
 	}
 
-	// If we made it this far, this means all the variables referenced are accounted for and we can evaluate this
-	// expression.
-	return true, ""
+	return diags
 }
 
 // getLocalName takes a variable reference encoded as a HCL tree traversal that is rooted at the name `local` and
 // returns the underlying variable lookup on the local map. If it is not a local name lookup, this will return empty
 // string.
-func getLocalName(terragruntOptions *options.TerragruntOptions, traversal hcl.Traversal) string {
+func getLocalName(traversal hcl.Traversal) string {
 	if traversal.IsRelative() {
 		return ""
 	}
@@ -283,76 +240,24 @@ func getLocalName(terragruntOptions *options.TerragruntOptions, traversal hcl.Tr
 			continue
 		}
 	}
+
 	return ""
-}
-
-// getLocalsBlock takes a parsed HCL file and extracts a reference to the `locals` block, if there is one defined.
-func getLocalsBlock(hclFile *hcl.File) (*hcl.Block, hcl.Diagnostics) {
-	localsSchema := &hcl.BodySchema{
-		Blocks: []hcl.BlockHeaderSchema{
-			hcl.BlockHeaderSchema{Type: "locals"},
-		},
-	}
-	// We use PartialContent here, because we are only interested in parsing out the locals block.
-	parsedLocals, _, diags := hclFile.Body.PartialContent(localsSchema)
-	extractedLocalsBlocks := []*hcl.Block{}
-	for _, block := range parsedLocals.Blocks {
-		if block.Type == "locals" {
-			extractedLocalsBlocks = append(extractedLocalsBlocks, block)
-		}
-	}
-	// We currently only support parsing a single locals block
-	if len(extractedLocalsBlocks) == 1 {
-		return extractedLocalsBlocks[0], diags
-	} else if len(extractedLocalsBlocks) > 1 {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Multiple locals block",
-			Detail:   multipleLocalsBlockDetail,
-		})
-		return nil, diags
-	} else {
-		// No locals block parsed
-		return nil, diags
-	}
-}
-
-// decodeLocalsBlock loads the block into name expression pairs to assist with evaluation of the locals prior to
-// evaluating the whole config. Note that this is exactly the same as
-// terraform/configs/named_values.go:decodeLocalsBlock
-func decodeLocalsBlock(localsBlock *hcl.Block) ([]*Local, hcl.Diagnostics) {
-	attrs, diags := localsBlock.Body.JustAttributes()
-	if len(attrs) == 0 {
-		return nil, diags
-	}
-
-	locals := make([]*Local, 0, len(attrs))
-	for name, attr := range attrs {
-		if !hclsyntax.ValidIdentifier(name) {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Invalid local value name",
-				Detail:   badIdentifierDetail,
-				Subject:  &attr.NameRange,
-			})
-		}
-
-		locals = append(locals, &Local{
-			Name: name,
-			Expr: attr.Expr,
-		})
-	}
-	return locals, diags
 }
 
 // ------------------------------------------------
 // Custom Errors Returned by Functions in this Code
 // ------------------------------------------------
 
-type CouldNotEvaluateAllLocalsError struct{}
+type CouldNotEvaluateAllLocalsError struct {
+	Err error
+}
 
 func (err CouldNotEvaluateAllLocalsError) Error() string {
 	return "Could not evaluate all locals in block."
+}
+
+func (err CouldNotEvaluateAllLocalsError) Unwrap() error {
+	return err.Err
 }
 
 type MaxIterError struct{}

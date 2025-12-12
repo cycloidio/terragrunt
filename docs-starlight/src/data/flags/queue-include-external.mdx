@@ -1,0 +1,13 @@
+---
+name: queue-include-external
+description: Include external dependencies in the queue of Units to run.
+type: bool
+env:
+  - TG_QUEUE_INCLUDE_EXTERNAL
+---
+
+By default, Terragrunt excludes external dependencies (dependencies discovered outside the current working directory) from the queue when running commands with [`--all`](/docs/reference/cli/commands/run#all) or [`--graph`](/docs/reference/cli/commands/run#graph).
+
+When this flag is enabled, Terragrunt will include those external dependencies in the queue.
+
+This flag is useful when you have units that depend on infrastructure outside your current working directory and need those dependencies to be processed as part of the run.

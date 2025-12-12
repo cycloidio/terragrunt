@@ -1,0 +1,16 @@
+---
+name: disable-bucket-update
+description: |
+  When this flag is set, Terragrunt will not update the remote state resources.
+type: bool
+env:
+  - TG_DISABLE_BUCKET_UPDATE
+---
+
+When enabled, Terragrunt will throw an error if it detects that remote state resources need to be updated.
+
+This is useful in scenarios where:
+- You want to ensure state bucket configurations remain unchanged during operations
+- You have separate processes for managing state bucket configurations
+
+The flag acts as a safety mechanism to prevent unintended modifications to your state storage infrastructure.

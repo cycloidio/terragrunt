@@ -1,24 +1,35 @@
 //go:build linux || darwin
 // +build linux darwin
 
-package test
+package test_test
 
 import (
-	"fmt"
+	"path/filepath"
 	"testing"
+
+	"github.com/gruntwork-io/terragrunt/test/helpers"
+	"github.com/gruntwork-io/terragrunt/util"
+	"github.com/stretchr/testify/require"
 )
 
 const (
-	TEST_FIXTURE_LOCAL_RELATIVE_ARGS_UNIX_DOWNLOAD_PATH = "fixture-download/local-relative-extra-args-unix"
+	testFixtureDownloadPath                      = "fixtures/download"
+	testFixtureLocalRelativeArgsUnixDownloadPath = "fixtures/download/local-relative-extra-args-unix"
 )
 
 func TestLocalWithRelativeExtraArgsUnix(t *testing.T) {
 	t.Parallel()
 
-	cleanupTerraformFolder(t, TEST_FIXTURE_LOCAL_RELATIVE_ARGS_UNIX_DOWNLOAD_PATH)
+	tmpEnvPath := helpers.CopyEnvironment(t, testFixtureDownloadPath)
+	testPath := util.JoinPath(tmpEnvPath, testFixtureLocalRelativeArgsUnixDownloadPath)
 
-	runTerragrunt(t, fmt.Sprintf("terragrunt apply -auto-approve --terragrunt-non-interactive --terragrunt-working-dir %s", TEST_FIXTURE_LOCAL_RELATIVE_ARGS_UNIX_DOWNLOAD_PATH))
+	testPath, err := filepath.EvalSymlinks(testPath)
+	require.NoError(t, err)
+
+	helpers.CleanupTerraformFolder(t, testPath)
+
+	helpers.RunTerragrunt(t, "terragrunt apply -auto-approve --non-interactive --working-dir "+testPath)
 
 	// Run a second time to make sure the temporary folder can be reused without errors
-	runTerragrunt(t, fmt.Sprintf("terragrunt apply -auto-approve --terragrunt-non-interactive --terragrunt-working-dir %s", TEST_FIXTURE_LOCAL_RELATIVE_ARGS_UNIX_DOWNLOAD_PATH))
+	helpers.RunTerragrunt(t, "terragrunt apply -auto-approve --non-interactive --working-dir "+testPath)
 }

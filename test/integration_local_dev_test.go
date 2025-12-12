@@ -1,4 +1,4 @@
-package test
+package test_test
 
 import (
 	"bytes"
@@ -7,22 +7,27 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/gruntwork-io/terragrunt/test/helpers"
 	"github.com/gruntwork-io/terragrunt/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	testFixtureGetTerragruntSourceHcl = "fixtures/get-terragrunt-source-hcl"
+)
+
 func TestTerragruntSourceMap(t *testing.T) {
 	t.Parallel()
 
-	fixtureSourceMapPath := "fixture-source-map"
-	cleanupTerraformFolder(t, fixtureSourceMapPath)
-	tmpEnvPath := copyEnvironment(t, fixtureSourceMapPath)
+	fixtureSourceMapPath := filepath.Join("fixtures", "source-map")
+	helpers.CleanupTerraformFolder(t, fixtureSourceMapPath)
+	tmpEnvPath := helpers.CopyEnvironment(t, fixtureSourceMapPath)
 	rootPath := filepath.Join(tmpEnvPath, fixtureSourceMapPath)
 	sourceMapArgs := fmt.Sprintf(
-		"--terragrunt-source-map %s --terragrunt-source-map %s",
-		fmt.Sprintf("git::ssh://git@github.com/gruntwork-io/i-dont-exist.git=%s", tmpEnvPath),
-		fmt.Sprintf("git::ssh://git@github.com/gruntwork-io/another-dont-exist.git=%s", tmpEnvPath),
+		"--source-map %s --source-map %s",
+		"git::ssh://git@github.com/gruntwork-io/i-dont-exist.git="+tmpEnvPath,
+		"git::ssh://git@github.com/gruntwork-io/another-dont-exist.git="+tmpEnvPath,
 	)
 
 	testCases := []struct {
@@ -51,20 +56,19 @@ func TestTerragruntSourceMap(t *testing.T) {
 		},
 	}
 
-	for _, testCase := range testCases {
-		// capture range variable to avoid it changing across for loop runs during goroutine transitions.
-		testCase := testCase
-		t.Run(testCase.name, func(t *testing.T) {
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tgPath := filepath.Join(rootPath, testCase.name)
 
-			action := "apply"
-			if testCase.applyAll {
-				action = "run-all apply"
+			tgPath := filepath.Join(rootPath, tc.name)
+
+			action := "run"
+			if tc.applyAll {
+				action = "run --all"
 			}
 
-			tgArgs := fmt.Sprintf("terragrunt %s -auto-approve --terragrunt-log-level debug --terragrunt-non-interactive --terragrunt-working-dir %s %s", action, tgPath, sourceMapArgs)
-			runTerragrunt(t, tgArgs)
+			tgArgs := fmt.Sprintf("terragrunt %s --log-level trace --non-interactive --working-dir %s %s -- apply -auto-approve", action, tgPath, sourceMapArgs)
+			helpers.RunTerragrunt(t, tgArgs)
 		})
 	}
 }
@@ -72,12 +76,12 @@ func TestTerragruntSourceMap(t *testing.T) {
 func TestGetTerragruntSourceHCL(t *testing.T) {
 	t.Parallel()
 
-	cleanupTerraformFolder(t, TEST_FIXTURE_GET_TERRAGRUNT_SOURCE_HCL)
-	tmpEnvPath := copyEnvironment(t, TEST_FIXTURE_GET_TERRAGRUNT_SOURCE_HCL)
-	rootPath := util.JoinPath(tmpEnvPath, TEST_FIXTURE_GET_TERRAGRUNT_SOURCE_HCL)
+	helpers.CleanupTerraformFolder(t, testFixtureGetTerragruntSourceHcl)
+	tmpEnvPath := helpers.CopyEnvironment(t, testFixtureGetTerragruntSourceHcl)
+	rootPath := util.JoinPath(tmpEnvPath, testFixtureGetTerragruntSourceHcl)
 	terraformSource := "" // get_terragrunt_source_cli_flag() only returns the source when it is passed in via the CLI
 
-	runTerragrunt(t, fmt.Sprintf("terragrunt apply -auto-approve --terragrunt-non-interactive --terragrunt-working-dir %s", rootPath))
+	helpers.RunTerragrunt(t, "terragrunt apply -auto-approve --non-interactive --working-dir "+rootPath)
 
 	// verify expected outputs are not empty
 	stdout := bytes.Buffer{}
@@ -85,24 +89,24 @@ func TestGetTerragruntSourceHCL(t *testing.T) {
 
 	require.NoError(
 		t,
-		runTerragruntCommand(t, fmt.Sprintf("terragrunt output -no-color -json --terragrunt-non-interactive --terragrunt-working-dir %s", rootPath), &stdout, &stderr),
+		helpers.RunTerragruntCommand(t, "terragrunt output -no-color -json --non-interactive --working-dir "+rootPath, &stdout, &stderr),
 	)
 
-	outputs := map[string]TerraformOutput{}
+	outputs := map[string]helpers.TerraformOutput{}
 
-	require.NoError(t, json.Unmarshal([]byte(stdout.String()), &outputs))
-	assert.Equal(t, fmt.Sprintf("HCL: %s", terraformSource), outputs["terragrunt_source"].Value)
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &outputs))
+	assert.Equal(t, "HCL: "+terraformSource, outputs["terragrunt_source"].Value)
 }
 
 func TestGetTerragruntSourceCLI(t *testing.T) {
 	t.Parallel()
 
-	cleanupTerraformFolder(t, TEST_FIXTURE_GET_TERRAGRUNT_SOURCE_CLI)
-	tmpEnvPath := copyEnvironment(t, TEST_FIXTURE_GET_TERRAGRUNT_SOURCE_CLI)
-	rootPath := util.JoinPath(tmpEnvPath, TEST_FIXTURE_GET_TERRAGRUNT_SOURCE_CLI)
+	helpers.CleanupTerraformFolder(t, testFixtureGetTerragruntSourceCli)
+	tmpEnvPath := helpers.CopyEnvironment(t, testFixtureGetTerragruntSourceCli)
+	rootPath := util.JoinPath(tmpEnvPath, testFixtureGetTerragruntSourceCli)
 	terraformSource := "terraform_config_cli"
 
-	runTerragrunt(t, fmt.Sprintf("terragrunt apply -auto-approve --terragrunt-non-interactive --terragrunt-working-dir %s --terragrunt-source %s", rootPath, terraformSource))
+	helpers.RunTerragrunt(t, fmt.Sprintf("terragrunt apply -auto-approve --non-interactive --working-dir %s --source %s", rootPath, terraformSource))
 
 	// verify expected outputs are not empty
 	stdout := bytes.Buffer{}
@@ -110,11 +114,11 @@ func TestGetTerragruntSourceCLI(t *testing.T) {
 
 	require.NoError(
 		t,
-		runTerragruntCommand(t, fmt.Sprintf("terragrunt output -no-color -json --terragrunt-non-interactive --terragrunt-working-dir %s --terragrunt-source %s", rootPath, terraformSource), &stdout, &stderr),
+		helpers.RunTerragruntCommand(t, fmt.Sprintf("terragrunt output -no-color -json --non-interactive --working-dir %s --source %s", rootPath, terraformSource), &stdout, &stderr),
 	)
 
-	outputs := map[string]TerraformOutput{}
+	outputs := map[string]helpers.TerraformOutput{}
 
-	require.NoError(t, json.Unmarshal([]byte(stdout.String()), &outputs))
-	assert.Equal(t, fmt.Sprintf("CLI: %s", terraformSource), outputs["terragrunt_source"].Value)
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &outputs))
+	assert.Equal(t, "CLI: "+terraformSource, outputs["terragrunt_source"].Value)
 }

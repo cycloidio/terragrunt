@@ -4,17 +4,20 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsimple"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 
-	"github.com/gruntwork-io/terragrunt/errors"
+	"github.com/gruntwork-io/terragrunt/internal/errors"
 	"github.com/gruntwork-io/terragrunt/options"
+	"github.com/gruntwork-io/terragrunt/pkg/log"
 	"github.com/gruntwork-io/terragrunt/util"
 )
 
@@ -27,7 +30,7 @@ const (
 	DefaultCommentPrefix = "# "
 )
 
-// An enum to represent valid values for if_exists
+// GenerateConfigExists is an enum to represent valid values for if_exists.
 type GenerateConfigExists int
 
 const (
@@ -38,22 +41,55 @@ const (
 	ExistsUnknown
 )
 
+// GenerateConfigDisabled is an enum to represent valid values for if_disabled.
+type GenerateConfigDisabled int
+
+const (
+	DisabledSkip GenerateConfigDisabled = iota
+	DisabledRemove
+	DisabledRemoveTerragrunt
+	DisabledUnknown
+)
+
 const (
 	ExistsErrorStr               = "error"
 	ExistsSkipStr                = "skip"
 	ExistsOverwriteStr           = "overwrite"
 	ExistsOverwriteTerragruntStr = "overwrite_terragrunt"
+
+	DisabledSkipStr             = "skip"
+	DisabledRemoveStr           = "remove"
+	DisabledRemoveTerragruntStr = "remove_terragrunt"
+
+	assumeRoleConfigKey                = "assume_role"
+	assumeRoleWithWebIdentityConfigKey = "assume_role_with_web_identity"
+
+	encryptionBlockName = "encryption"
+
+	EncryptionKeyProviderKey = "key_provider"
+	encryptionResourceName   = "default"
+
+	encryptionMethodKey     = "method"
+	encryptionDefaultMethod = "aes_gcm"
+
+	encryptionKeysAttributeName = "keys"
+
+	encryptionStateBlockName = "state"
+	encryptionPlanBlockName  = "plan"
 )
 
-// Configuration for generating code
+// GenerateConfig is configuration for generating code
 type GenerateConfig struct {
+	HclFmt           *bool  `cty:"hcl_fmt"`
 	Path             string `cty:"path"`
-	IfExists         GenerateConfigExists
 	IfExistsStr      string `cty:"if_exists"`
+	IfDisabledStr    string `cty:"if_disabled"`
 	CommentPrefix    string `cty:"comment_prefix"`
 	Contents         string `cty:"contents"`
-	DisableSignature bool   `cty:"disable_signature"`
-	Disable          bool   `cty:"disable"`
+	IfExists         GenerateConfigExists
+	IfDisabled       GenerateConfigDisabled
+	DisableSignature bool `cty:"disable_signature"`
+	Disable          bool `cty:"disable"`
 }
 
 // WriteToFile will generate a new file at the given target path with the given contents. If a file already exists at
@@ -61,14 +97,8 @@ type GenerateConfig struct {
 // - if ExistsError, return an error.
 // - if ExistsSkip, do nothing and return
 // - if ExistsOverwrite, overwrite the existing file
-func WriteToFile(terragruntOptions *options.TerragruntOptions, basePath string, config GenerateConfig) error {
-	// If this GenerateConfig is disabled then skip further processing.
-	if config.Disable {
-		terragruntOptions.Logger.Debugf("Skipping generating file at %s because it is disabled", config.Path)
-		return nil
-	}
-
-	// Figure out thee target path to generate the code in. If relative, merge with basePath.
+func WriteToFile(l log.Logger, opts *options.TerragruntOptions, basePath string, config GenerateConfig) error {
+	// Figure out the target path to generate the code in. If relative, merge with basePath.
 	var targetPath string
 	if filepath.IsAbs(config.Path) {
 		targetPath = config.Path
@@ -77,8 +107,26 @@ func WriteToFile(terragruntOptions *options.TerragruntOptions, basePath string, 
 	}
 
 	targetFileExists := util.FileExists(targetPath)
+
+	// If this GenerateConfig is disabled then skip further processing.
+	if config.Disable {
+		l.Debugf("Skipping generating file at %s because it is disabled", config.Path)
+
+		if targetFileExists {
+			if shouldRemove, err := shouldRemoveWithFileExists(l, targetPath, config.IfDisabled); err != nil {
+				return err
+			} else if shouldRemove {
+				if err := os.Remove(targetPath); err != nil {
+					return errors.New(err)
+				}
+			}
+		}
+
+		return nil
+	}
+
 	if targetFileExists {
-		shouldContinue, err := shouldContinueWithFileExists(terragruntOptions, targetPath, config.IfExists)
+		shouldContinue, err := shouldContinueWithFileExists(l, targetPath, config.IfExists)
 		if err != nil || !shouldContinue {
 			return err
 		}
@@ -89,29 +137,56 @@ func WriteToFile(terragruntOptions *options.TerragruntOptions, basePath string, 
 	if !config.DisableSignature {
 		prefix = fmt.Sprintf("%s%s\n", config.CommentPrefix, TerragruntGeneratedSignature)
 	}
-	contentsToWrite := fmt.Sprintf("%s%s", prefix, config.Contents)
 
-	if err := ioutil.WriteFile(targetPath, []byte(contentsToWrite), 0644); err != nil {
-		return errors.WithStackTrace(err)
+	fmtGeneratedCode := false
+
+	if config.HclFmt == nil {
+		var fmtExt = map[string]struct{}{
+			".hcl":  {},
+			".tf":   {},
+			".tofu": {},
+		}
+
+		ext := filepath.Ext(config.Path)
+		if _, ok := fmtExt[ext]; ok {
+			fmtGeneratedCode = true
+		}
+	} else {
+		fmtGeneratedCode = *config.HclFmt
 	}
-	terragruntOptions.Logger.Debugf("Generated file %s.", targetPath)
+
+	contentsToWrite := fmt.Appendf(nil, "%s%s", prefix, config.Contents)
+	if fmtGeneratedCode {
+		contentsToWrite = hclwrite.Format(contentsToWrite)
+	}
+
+	const ownerWriteGlobalReadPerms = 0644
+	if err := os.WriteFile(targetPath, contentsToWrite, ownerWriteGlobalReadPerms); err != nil {
+		return errors.New(err)
+	}
+
+	l.Debugf("Generated file %s.", targetPath)
+
 	return nil
 }
 
 // Whether or not file generation should continue if the file path already exists. The answer depends on the
 // ifExists configuration.
-func shouldContinueWithFileExists(terragruntOptions *options.TerragruntOptions, path string, ifExists GenerateConfigExists) (bool, error) {
-	switch ifExists {
+func shouldContinueWithFileExists(l log.Logger, path string, ifExists GenerateConfigExists) (bool, error) {
+	// TODO: Make exhaustive
+	switch ifExists { //nolint:exhaustive
 	case ExistsError:
-		return false, errors.WithStackTrace(GenerateFileExistsError{path: path})
+		return false, errors.New(GenerateFileExistsError{path: path})
 	case ExistsSkip:
 		// Do nothing since file exists and skip was configured
-		terragruntOptions.Logger.Debugf("The file path %s already exists and if_exists for code generation set to \"skip\". Will not regenerate file.", path)
+		l.Debugf("The file path %s already exists and if_exists for code generation set to \"skip\". Will not regenerate file.", path)
+
 		return false, nil
 	case ExistsOverwrite:
 		// We will continue to proceed to generate file, but log a message to indicate that we detected the file
 		// exists.
-		terragruntOptions.Logger.Debugf("The file path %s already exists and if_exists for code generation set to \"overwrite\". Regenerating file.", path)
+		l.Debugf("The file path %s already exists and if_exists for code generation set to \"overwrite\". Regenerating file.", path)
+
 		return true, nil
 	case ExistsOverwriteTerragrunt:
 		// If file was not generated, error out because overwrite_terragrunt if_exists setting only handles if the
@@ -120,16 +195,55 @@ func shouldContinueWithFileExists(terragruntOptions *options.TerragruntOptions, 
 		if err != nil {
 			return false, err
 		}
+
 		if !wasGenerated {
-			terragruntOptions.Logger.Errorf("ERROR: The file path %s already exists and was not generated by terragrunt.", path)
-			return false, errors.WithStackTrace(GenerateFileExistsError{path: path})
+			l.Errorf("ERROR: The file path %s already exists and was not generated by terragrunt.", path)
+
+			return false, errors.New(GenerateFileExistsError{path: path})
 		}
+
 		// Since file was generated by terragrunt, continue.
-		terragruntOptions.Logger.Debugf("The file path %s already exists, but was a previously generated file by terragrunt. Since if_exists for code generation is set to \"overwrite_terragrunt\", regenerating file.", path)
+		l.Debugf("The file path %s already exists, but was a previously generated file by terragrunt. Since if_exists for code generation is set to \"overwrite_terragrunt\", regenerating file.", path)
+
 		return true, nil
 	default:
 		// This shouldn't happen, but we add this case anyway for defensive coding.
-		return false, errors.WithStackTrace(UnknownGenerateIfExistsVal{""})
+		return false, errors.New(UnknownGenerateIfExistsVal{""})
+	}
+}
+
+// shouldRemoveWithFileExists returns true if the already existing file should be removed.
+func shouldRemoveWithFileExists(l log.Logger, path string, ifDisable GenerateConfigDisabled) (bool, error) {
+	// TODO: Make exhaustive
+	switch ifDisable { //nolint:exhaustive
+	case DisabledSkip:
+		// Do nothing since skip was configured.
+		l.Debugf("The file path %s already exists and if_disabled for code generation set to \"skip\", will not remove file.", path)
+		return false, nil
+	case DisabledRemove:
+		// The file exists and will be removed.
+		l.Debugf("The file path %s already exists and if_disabled for code generation set to \"remove\", removing file.", path)
+		return true, nil
+	case DisabledRemoveTerragrunt:
+		// If file was not generated, error out because remove_terragrunt if_disabled setting only handles if the existing file was generated by terragrunt.
+		wasGenerated, err := fileWasGeneratedByTerragrunt(path)
+		if err != nil {
+			return false, err
+		}
+
+		if !wasGenerated {
+			l.Errorf("ERROR: The file path %s already exists and was not generated by terragrunt.", path)
+
+			return false, errors.New(GenerateFileRemoveError{path: path})
+		}
+
+		// Since file was generated by terragrunt, removing.
+		l.Debugf("The file path %s already exists, but was a previously generated file by terragrunt. Since if_disabled for code generation is set to \"remove_terragrunt\", removing file.", path)
+
+		return true, nil
+	default:
+		// This shouldn't happen, but we add this case anyway for defensive coding.
+		return false, errors.New(UnknownGenerateIfDisabledVal{""})
 	}
 }
 
@@ -139,45 +253,331 @@ func shouldContinueWithFileExists(terragruntOptions *options.TerragruntOptions, 
 func fileWasGeneratedByTerragrunt(path string) (bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return false, errors.WithStackTrace(err)
+		return false, errors.New(err)
 	}
 	defer file.Close()
 
 	reader := bufio.NewReader(file)
+
 	firstLine, err := reader.ReadString('\n')
 	if err != nil {
-		return false, errors.WithStackTrace(err)
+		return false, errors.New(err)
 	}
+
 	return strings.HasSuffix(strings.TrimSpace(firstLine), TerragruntGeneratedSignature), nil
 }
 
-// Convert the arbitrary map that represents a remote state config into HCL code to configure that remote state.
-func RemoteStateConfigToTerraformCode(backend string, config map[string]interface{}) ([]byte, error) {
+const (
+	terraformBlock = "terraform"
+	backendBlock   = "backend"
+)
+
+// RemoteStateConfigToTerraformCode converts the arbitrary map that represents a remote state config into HCL code to configure that remote state.
+func RemoteStateConfigToTerraformCode(backend string, config map[string]any, encryption map[string]any) ([]byte, error) {
 	f := hclwrite.NewEmptyFile()
-	backendBlock := f.Body().AppendNewBlock("terraform", nil).Body().AppendNewBlock("backend", []string{backend})
+	terraformBlock := f.Body().AppendNewBlock(terraformBlock, nil).Body()
+	backendBlock := terraformBlock.AppendNewBlock(backendBlock, []string{backend})
 	backendBlockBody := backendBlock.Body()
-	var backendKeys []string
+
+	var backendKeys = make([]string, 0, len(config))
 
 	for key := range config {
 		backendKeys = append(backendKeys, key)
 	}
+
 	sort.Strings(backendKeys)
+
 	for _, key := range backendKeys {
 		// Since we don't have the cty type information for the config and since config can be arbitrary, we cheat by using
 		// json as an intermediate representation.
-		jsonBytes, err := json.Marshal(config[key])
-		if err != nil {
-			return nil, errors.WithStackTrace(err)
+		//
+		// handle assume role config key in a different way since it is a single line HCL object
+		if key == assumeRoleConfigKey {
+			assumeRoleValue, isAssumeRole := config[assumeRoleConfigKey].(string)
+			if !isAssumeRole {
+				continue
+			}
+			// Extracting the values requires two steps.
+			// Parsing into a struct first, enabling hclsimple.Decode() to deal with complex types.
+			// Then copying values into the assumeRoleMap for rendering to HCL.
+			assumeRoleMap := make(map[string]any)
+
+			type assumeRoleConfig struct {
+				RoleArn           string            `hcl:"role_arn"`
+				Duration          string            `hcl:"duration,optional"`
+				ExternalID        string            `hcl:"external_id,optional"`
+				Policy            string            `hcl:"policy,optional"`
+				PolicyArns        []string          `hcl:"policy_arns,optional"`
+				SessionName       string            `hcl:"session_name,optional"`
+				SourceIdentity    string            `hcl:"source_identity,optional"`
+				Tags              map[string]string `hcl:"tags,optional"`
+				TransitiveTagKeys []string          `hcl:"transitive_tag_keys,optional"`
+			}
+
+			var parsedConfig assumeRoleConfig
+			// split single line hcl to default multiline file
+			hclValue := strings.TrimSuffix(assumeRoleValue, "}")
+			hclValue = strings.TrimPrefix(hclValue, "{")
+			hclValue = ReplaceAllCommasOutsideQuotesWithNewLines(hclValue)
+
+			err := hclsimple.Decode("s3_assume_role.hcl", []byte(hclValue), nil, &parsedConfig)
+			if err != nil {
+				return nil, errors.New(err)
+			}
+
+			// Copy filled values to the map, could be made shorter but keeping it simple for now
+			if parsedConfig.RoleArn != "" {
+				assumeRoleMap["role_arn"] = parsedConfig.RoleArn
+			}
+
+			if parsedConfig.Duration != "" {
+				assumeRoleMap["duration"] = parsedConfig.Duration
+			}
+
+			if parsedConfig.ExternalID != "" {
+				assumeRoleMap["external_id"] = parsedConfig.ExternalID
+			}
+
+			if parsedConfig.Policy != "" {
+				assumeRoleMap["policy"] = parsedConfig.Policy
+			}
+
+			if len(parsedConfig.PolicyArns) > 0 {
+				assumeRoleMap["policy_arns"] = parsedConfig.PolicyArns
+			}
+
+			if parsedConfig.SessionName != "" {
+				assumeRoleMap["session_name"] = parsedConfig.SessionName
+			}
+
+			if parsedConfig.SourceIdentity != "" {
+				assumeRoleMap["source_identity"] = parsedConfig.SourceIdentity
+			}
+
+			if len(parsedConfig.Tags) > 0 {
+				assumeRoleMap["tags"] = parsedConfig.Tags
+			}
+
+			if len(parsedConfig.TransitiveTagKeys) > 0 {
+				assumeRoleMap["transitive_tag_keys"] = parsedConfig.TransitiveTagKeys
+			}
+
+			// write assume role map as HCL object
+			ctyVal, err := convertValue(assumeRoleMap)
+			if err != nil {
+				return nil, errors.New(err)
+			}
+
+			backendBlockBody.SetAttributeValue(key, ctyVal.Value)
+
+			continue
 		}
-		var ctyVal ctyjson.SimpleJSONValue
-		if err := ctyVal.UnmarshalJSON(jsonBytes); err != nil {
-			return nil, errors.WithStackTrace(err)
+
+		if key == assumeRoleWithWebIdentityConfigKey {
+			assumeRoleWithWebIdentityValue, isAssumeRoleWithWebIdentity := config[assumeRoleWithWebIdentityConfigKey].(string)
+			if !isAssumeRoleWithWebIdentity {
+				continue
+			}
+
+			// Extracting the values requires two steps.
+			// Parsing into a struct first, enabling hclsimple.Decode() to deal with complex types.
+			// Then copying values into the assumeRoleMap for rendering to HCL.
+			assumeRoleMap := make(map[string]any)
+
+			type assumeRoleWithWebIdentityConfig struct {
+				RoleArn              string   `hcl:"role_arn"`
+				Duration             string   `hcl:"duration,optional"`
+				Policy               string   `hcl:"policy,optional"`
+				SessionName          string   `hcl:"session_name,optional"`
+				WebIdentityToken     string   `hcl:"web_identity_token,optional"`
+				WebIdentityTokenFile string   `hcl:"web_identity_token_file,optional"`
+				PolicyArns           []string `hcl:"policy_arns,optional"`
+			}
+
+			var parsedConfig assumeRoleWithWebIdentityConfig
+			// split single line hcl to default multiline file
+			hclValue := strings.TrimSuffix(assumeRoleWithWebIdentityValue, "}")
+			hclValue = strings.TrimPrefix(hclValue, "{")
+			hclValue = ReplaceAllCommasOutsideQuotesWithNewLines(hclValue)
+
+			err := hclsimple.Decode("s3_assume_role_with_web_identity.hcl", []byte(hclValue), nil, &parsedConfig)
+			if err != nil {
+				return nil, errors.New(err)
+			}
+
+			if parsedConfig.RoleArn != "" {
+				assumeRoleMap["role_arn"] = parsedConfig.RoleArn
+			}
+
+			if parsedConfig.Duration != "" {
+				assumeRoleMap["duration"] = parsedConfig.Duration
+			}
+
+			if parsedConfig.Policy != "" {
+				assumeRoleMap["policy"] = parsedConfig.Policy
+			}
+
+			if len(parsedConfig.PolicyArns) > 0 {
+				assumeRoleMap["policy_arns"] = parsedConfig.PolicyArns
+			}
+
+			if parsedConfig.SessionName != "" {
+				assumeRoleMap["session_name"] = parsedConfig.SessionName
+			}
+
+			if parsedConfig.WebIdentityToken != "" {
+				assumeRoleMap["web_identity_token"] = parsedConfig.WebIdentityToken
+			}
+
+			if parsedConfig.WebIdentityTokenFile != "" {
+				assumeRoleMap["web_identity_token_file"] = parsedConfig.WebIdentityTokenFile
+			}
+
+			// write assume role map as HCL object
+			ctyVal, err := convertValue(assumeRoleMap)
+			if err != nil {
+				return nil, errors.New(err)
+			}
+
+			backendBlockBody.SetAttributeValue(key, ctyVal.Value)
+
+			continue
+		}
+
+		ctyVal, err := convertValue(config[key])
+		if err != nil {
+			return nil, errors.New(err)
 		}
 
 		backendBlockBody.SetAttributeValue(key, ctyVal.Value)
 	}
 
+	// encryption can be empty
+	if len(encryption) == 0 {
+		return f.Bytes(), nil
+	}
+
+	// extract key_provider first to create key_provider block
+	keyProvider, found := encryption[EncryptionKeyProviderKey].(string)
+	if !found {
+		return nil, errors.New(EncryptionKeyProviderKey + " is mandatory but not found in the encryption map")
+	}
+
+	keyProviderTraversal := hcl.Traversal{
+		hcl.TraverseRoot{Name: EncryptionKeyProviderKey},
+		hcl.TraverseAttr{Name: keyProvider},
+		hcl.TraverseAttr{Name: encryptionResourceName},
+	}
+
+	methodTraversal := hcl.Traversal{
+		hcl.TraverseRoot{Name: encryptionMethodKey},
+		hcl.TraverseAttr{Name: encryptionDefaultMethod},
+		hcl.TraverseAttr{Name: encryptionResourceName},
+	}
+
+	// encryption block
+	encryptionBlock := terraformBlock.AppendNewBlock(encryptionBlockName, nil)
+	encryptionBlockBody := encryptionBlock.Body()
+
+	// Append key_provider block
+	keyProviderBlockBody := encryptionBlockBody.AppendNewBlock(EncryptionKeyProviderKey, []string{keyProvider, encryptionResourceName}).Body()
+
+	// Append method block
+	methodBlock := encryptionBlockBody.AppendNewBlock(encryptionMethodKey, []string{encryptionDefaultMethod, encryptionResourceName}).Body()
+	methodBlock.SetAttributeTraversal(encryptionKeysAttributeName, keyProviderTraversal)
+
+	// Append state block
+	stateBlock := encryptionBlockBody.AppendNewBlock(encryptionStateBlockName, nil).Body()
+	stateBlock.SetAttributeTraversal(encryptionMethodKey, methodTraversal)
+
+	// Append plan block
+	planBlock := encryptionBlockBody.AppendNewBlock(encryptionPlanBlockName, nil).Body()
+	planBlock.SetAttributeTraversal(encryptionMethodKey, methodTraversal)
+
+	var encryptionKeys = make([]string, 0, len(encryption))
+
+	for key := range encryption {
+		encryptionKeys = append(encryptionKeys, key)
+	}
+
+	sort.Strings(encryptionKeys)
+
+	// Fill key_provider block with ordered attributes
+	for _, key := range encryptionKeys {
+		if key == EncryptionKeyProviderKey {
+			continue
+		}
+
+		value, ok := encryption[key]
+		if !ok {
+			continue
+		}
+
+		// Skip basic types with zero values
+		if value == "" || value == 0 {
+			continue
+		}
+
+		ctyVal, err := convertValue(value)
+		if err != nil {
+			return nil, errors.New(err)
+		}
+
+		if keyProviderBlockBody != nil {
+			keyProviderBlockBody.SetAttributeValue(key, ctyVal.Value)
+		}
+	}
+
 	return f.Bytes(), nil
+}
+
+func convertValue(v any) (ctyjson.SimpleJSONValue, error) {
+	jsonBytes, err := json.Marshal(v)
+	if err != nil {
+		return ctyjson.SimpleJSONValue{}, errors.New(err)
+	}
+
+	var ctyVal ctyjson.SimpleJSONValue
+	if err := ctyVal.UnmarshalJSON(jsonBytes); err != nil {
+		return ctyjson.SimpleJSONValue{}, errors.New(err)
+	}
+
+	return ctyVal, nil
+}
+
+var (
+	// Regex Explanation:
+	// (          # Start group 1: Match quoted strings
+	//  "         # Match the opening quote
+	//  [^"\\]* # Match zero or more characters that are NOT a quote or backslash
+	//  (?:       # Start non-capturing group (for handling escaped quotes)
+	//    \\.     # Match a backslash followed by ANY character (escaped char)
+	//    [^"\\]* # Match zero or more non-quote/non-backslash chars
+	//  )*        # End non-capturing group, repeat zero or more times
+	//  "         # Match the closing quote
+	// )          # End group 1
+	// |          # OR
+	// (,)        # Start group 2: Match and capture a comma
+	//
+	re = regexp.MustCompile(`("[^"\\]*(?:\\.[^"\\]*)*")|(,)`)
+)
+
+// ReplaceAllCommasOutsideQuotesWithNewLines replaces all commas outside quotes with new lines.
+// This is useful for instances where a single line of HCL content might contain a comma, and we don't
+// want to split the line into multiple lines.
+func ReplaceAllCommasOutsideQuotesWithNewLines(s string) string {
+	output := re.ReplaceAllStringFunc(s, func(match string) string {
+		// Check if the match starts with a quote.
+		// If it does, it's a quoted string (group 1 matched). Return it unchanged.
+		if strings.HasPrefix(match, `"`) {
+			return match
+		}
+
+		// Otherwise, it must be the comma (group 2 matched). Replace it with a newline.
+		return "\n"
+	})
+
+	return output
 }
 
 // GenerateConfigExistsFromString converts a string representation of if_exists into the enum, returning an error if it
@@ -193,26 +593,20 @@ func GenerateConfigExistsFromString(val string) (GenerateConfigExists, error) {
 	case ExistsOverwriteTerragruntStr:
 		return ExistsOverwriteTerragrunt, nil
 	}
-	return ExistsUnknown, errors.WithStackTrace(UnknownGenerateIfExistsVal{val: val})
+
+	return ExistsUnknown, errors.New(UnknownGenerateIfExistsVal{val: val})
 }
 
-// Custom error types
-
-type UnknownGenerateIfExistsVal struct {
-	val string
-}
-
-func (err UnknownGenerateIfExistsVal) Error() string {
-	if err.val != "" {
-		return fmt.Sprintf("%s is not a valid value for generate if_exists", err.val)
+// GenerateConfigDisabledFromString converts a string representation of if_disabled into the enum, returning an error if it is not set to one of the known values.
+func GenerateConfigDisabledFromString(val string) (GenerateConfigDisabled, error) {
+	switch val {
+	case DisabledSkipStr:
+		return DisabledSkip, nil
+	case DisabledRemoveStr:
+		return DisabledRemove, nil
+	case DisabledRemoveTerragruntStr:
+		return DisabledRemoveTerragrunt, nil
 	}
-	return "Received unknown value for if_exists"
-}
 
-type GenerateFileExistsError struct {
-	path string
-}
-
-func (err GenerateFileExistsError) Error() string {
-	return fmt.Sprintf("Can not generate terraform file: %s already exists", err.path)
+	return DisabledUnknown, errors.New(UnknownGenerateIfDisabledVal{val: val})
 }

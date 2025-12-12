@@ -1,0 +1,11 @@
+---
+name: no-auto-provider-cache-dir
+description: Disable the auto-provider-cache-dir feature even when the experiment is enabled.
+type: bool
+env:
+  - TG_NO_AUTO_PROVIDER_CACHE_DIR
+---
+
+When enabled, Terragrunt will disable the `auto-provider-cache-dir` feature. This flag allows you to selectively opt-out of the automatic provider caching behavior.
+
+This is useful when you want to maintain control over provider caching in specific environments or scenarios.

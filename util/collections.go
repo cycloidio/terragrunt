@@ -3,9 +3,8 @@ package util
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
-
-	"github.com/gruntwork-io/terragrunt/errors"
 )
 
 func MatchesAny(regExps []string, s string) bool {
@@ -14,85 +13,89 @@ func MatchesAny(regExps []string, s string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
 // ListEquals returns true if the two lists are equal
-func ListEquals(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+func ListEquals[S ~[]E, E comparable](a, b S) bool {
+	return slices.Equal(a, b)
 }
 
-// Return true if the given list contains the given element
-func ListContainsElement(list []string, element string) bool {
-	for _, item := range list {
-		if item == element {
-			return true
-		}
-	}
-
-	return false
+// ListContainsElement returns true if the given list contains the given element
+func ListContainsElement[S ~[]E, E comparable](list S, element E) bool {
+	return slices.Contains(list, element)
 }
 
 // ListContainsSublist returns true if an instance of the sublist can be found in the given list
-func ListContainsSublist(list, sublist []string) bool {
+func ListContainsSublist[S ~[]E, E comparable](list, sublist S) bool {
 	// A list cannot contain an empty sublist
 	if len(sublist) == 0 {
 		return false
 	}
+
 	if len(sublist) > len(list) {
 		return false
 	}
+
 	for i := 0; len(list[i:]) >= len(sublist); i++ {
 		if ListEquals(list[i:i+len(sublist)], sublist) {
 			return true
 		}
 	}
+
 	return false
 }
 
 // ListHasPrefix returns true if list starts with the given prefix list
-func ListHasPrefix(list, prefix []string) bool {
+func ListHasPrefix[S ~[]E, E comparable](list, prefix S) bool {
 	if len(prefix) == 0 {
 		return false
 	}
+
 	if len(prefix) > len(list) {
 		return false
 	}
+
 	return ListEquals(list[:len(prefix)], prefix)
 }
 
-// Return a copy of the given list with all instances of the given element removed
-func RemoveElementFromList(list []string, element string) []string {
-	out := []string{}
+// RemoveElementFromList returns a copy of the given list with all instances of the given element removed.
+func RemoveElementFromList[S ~[]E, E comparable](list S, element E) S {
+	var out S
+
 	for _, item := range list {
 		if item != element {
 			out = append(out, item)
 		}
 	}
+
 	return out
 }
 
-// Returns a copy of the given list with all duplicates removed (keeping the first encountereds)
-func RemoveDuplicatesFromList(list []string) []string {
+// RemoveSublistFromList returns a copy of the given list with all instances of the given sublist removed
+func RemoveSublistFromList[S ~[]E, E comparable](list, sublist S) S {
+	var out = list
+	for _, item := range sublist {
+		out = RemoveElementFromList(out, item)
+	}
+
+	return out
+}
+
+// RemoveDuplicatesFromList returns a copy of the given list with all duplicates removed (keeping the first encountereds)
+func RemoveDuplicatesFromList[S ~[]E, E comparable](list S) S {
 	return removeDuplicatesFromList(list, false)
 }
 
-// Returns a copy of the given list with all duplicates removed (keeping the last encountereds)
-func RemoveDuplicatesFromListKeepLast(list []string) []string {
+// RemoveDuplicatesFromListKeepLast returns a copy of the given list with all duplicates removed (keeping the last encountereds)
+func RemoveDuplicatesFromListKeepLast[S ~[]E, E comparable](list S) S {
 	return removeDuplicatesFromList(list, true)
 }
 
-func removeDuplicatesFromList(list []string, keepLast bool) []string {
-	out := make([]string, 0, len(list))
-	present := make(map[string]bool)
+func removeDuplicatesFromList[S ~[]E, E comparable](list S, keepLast bool) S {
+	out := make(S, 0, len(list))
+	present := make(map[E]bool)
 
 	for _, value := range list {
 		if _, ok := present[value]; ok {
@@ -102,9 +105,11 @@ func removeDuplicatesFromList(list []string, keepLast bool) []string {
 				continue
 			}
 		}
+
 		out = append(out, value)
 		present[value] = true
 	}
+
 	return out
 }
 
@@ -114,51 +119,57 @@ func CommaSeparatedStrings(list []string) string {
 	for _, value := range list {
 		values = append(values, fmt.Sprintf(`"%s"`, value))
 	}
+
 	return strings.Join(values, ", ")
 }
 
-// Make a copy of the given list of strings
-func CloneStringList(listToClone []string) []string {
-	out := []string{}
-	for _, item := range listToClone {
-		out = append(out, item)
+// RemoveEmptyElements returns a copy of the given list without empty elements.
+func RemoveEmptyElements[S ~[]E, E comparable](list S) S {
+	var (
+		out   S
+		empty E
+	)
+
+	for _, item := range list {
+		if item != empty {
+			out = append(out, item)
+		}
 	}
+
 	return out
 }
 
-// Make a copy of the given map of strings
-func CloneStringMap(mapToClone map[string]string) map[string]string {
-	out := map[string]string{}
-	for key, value := range mapToClone {
-		out[key] = value
+// GetElement returns the element with the specified `index` from the given `list`.
+// if `index` is -1, the last element is returned.
+func GetElement[S ~[]E, E comparable](list S, index int) E {
+	lenList := len(list)
+
+	if lenList > 0 && lenList > index {
+		if index == -1 {
+			return (list)[lenList-1]
+		}
+
+		return (list)[index]
 	}
-	return out
+
+	var empty E
+
+	return empty
 }
 
-// A convenience method that returns the first item (0th index) in the given list or an empty string if this is an
-// empty list
-func FirstArg(args []string) string {
-	if len(args) > 0 {
-		return args[0]
-	}
-	return ""
+// FirstElement returns the first element from the given `list`.
+func FirstElement[S ~[]E, E comparable](list S) E {
+	return GetElement(list, 0)
 }
 
-// A convenience method that returns the second item (1st index) in the given list or an empty string if this is a
-// list that has less than 2 items in it
-func SecondArg(args []string) string {
-	if len(args) > 1 {
-		return args[1]
-	}
-	return ""
+// SecondElement returns the second element from the given `list`.
+func SecondElement[S ~[]E, E comparable](list S) E {
+	return GetElement(list, 1)
 }
 
-// A convenience method that returns the last item in the given list or an empty string if this is an empty list
-func LastArg(args []string) string {
-	if len(args) > 0 {
-		return args[len(args)-1]
-	}
-	return ""
+// LastElement returns the last element from the given `list`.
+func LastElement[S ~[]E, E comparable](list S) E {
+	return GetElement(list, -1)
 }
 
 // StringListInsert will insert the given string in to the provided string list at the specified index and return the
@@ -167,27 +178,6 @@ func LastArg(args []string) string {
 func StringListInsert(list []string, element string, index int) []string {
 	tail := append([]string{element}, list[index:]...)
 	return append(list[:index], tail...)
-}
-
-// KeyValuePairListToMap converts a list of key value pair encoded as `key=value` strings into a map
-// using the given `splitter` callback func, which can be the `strings.Split` function.
-func KeyValuePairStringListToMap(asList []string, splitter func(s, sep string) []string) (map[string]string, error) {
-	asMap := map[string]string{}
-
-	for _, arg := range asList {
-		parts := splitter(arg, "=")
-
-		if len(parts) != 2 {
-			return nil, errors.WithStackTrace(InvalidKeyValue(arg))
-		}
-
-		key := parts[0]
-		value := parts[1]
-
-		asMap[key] = value
-	}
-
-	return asMap, nil
 }
 
 // SplitUrls slices s into all substrings separated by sep and returns a slice of
@@ -200,7 +190,7 @@ func SplitUrls(s, sep string) []string {
 
 	// mask
 	for src, mask := range masks {
-		s = strings.Replace(s, src, mask, -1)
+		s = strings.ReplaceAll(s, src, mask)
 	}
 
 	urls := strings.Split(s, sep)
@@ -208,17 +198,47 @@ func SplitUrls(s, sep string) []string {
 	// unmask
 	for i := range urls {
 		for src, mask := range masks {
-			urls[i] = strings.Replace(urls[i], mask, src, -1)
+			urls[i] = strings.ReplaceAll(urls[i], mask, src)
 		}
 	}
 
 	return urls
 }
 
-// custom error types
+// SplitComma splits the given string by comma and returns a slice of the substrings.
+func SplitComma(s, sep string) []string {
+	return strings.Split(s, sep)
+}
 
-type InvalidKeyValue string
+// MergeStringSlices combines two string slices removing duplicates
+func MergeStringSlices(a, b []string) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(a)+len(b))
 
-func (err InvalidKeyValue) Error() string {
-	return fmt.Sprintf("Invalid key-value pair. Expected format KEY=VALUE, got %s.", string(err))
+	for _, s := range append(a, b...) {
+		if _, exists := seen[s]; !exists {
+			seen[s] = struct{}{}
+
+			result = append(result, s)
+		}
+	}
+
+	return result
+}
+
+// MapToSlice transforms a map with string keys and pointer values into a slice of pointers.
+// It extracts all values from the map and returns them as a slice while maintaining their original order in the map iteration.
+//
+// Parameters:
+//   - m: A map where the keys are strings and the values are pointers to elements of type T.
+//
+// Returns:
+//   - A slice containing all the pointer values from the input map.
+func MapToSlice[T any](m map[string]*T) []*T {
+	result := make([]*T, 0, len(m))
+	for _, block := range m {
+		result = append(result, block)
+	}
+
+	return result
 }

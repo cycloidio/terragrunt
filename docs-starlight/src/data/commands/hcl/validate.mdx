@@ -1,0 +1,29 @@
+---
+name: validate
+path: hcl/validate
+category: configuration
+sidebar:
+  order: 901
+description: Recursively find HashiCorp Configuration Language (HCL) files and validate them.
+usage: |
+  Recursively find HashiCorp Configuration Language (HCL) files and validate them.
+examples:
+  - description: Discover all HCL files in the current directory, and validate them.
+    code: |
+      terragrunt hcl validate
+flags:
+  - filter
+  - hcl-validate-json
+  - hcl-validate-show-config-path
+  - hcl-validate-inputs
+  - hcl-validate-strict
+  - queue-exclude-dir
+  - queue-exclude-external
+  - queue-excludes-file
+  - queue-ignore-dag-order
+  - queue-ignore-errors
+  - queue-include-dir
+  - queue-include-external
+  - queue-include-units-reading
+  - queue-strict-include
+---

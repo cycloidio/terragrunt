@@ -1,50 +1,80 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"github.com/gruntwork-io/terragrunt/cli"
-	"github.com/gruntwork-io/terragrunt/errors"
+	"github.com/gruntwork-io/terragrunt/cli/flags/global"
+	"github.com/gruntwork-io/terragrunt/internal/errors"
+	"github.com/gruntwork-io/terragrunt/options"
+	"github.com/gruntwork-io/terragrunt/pkg/log"
+	"github.com/gruntwork-io/terragrunt/pkg/log/format"
 	"github.com/gruntwork-io/terragrunt/shell"
+	"github.com/gruntwork-io/terragrunt/tf"
 	"github.com/gruntwork-io/terragrunt/util"
 )
 
-// This variable is set at build time using -ldflags parameters. For more info, see:
-// http://stackoverflow.com/a/11355611/483528
-var VERSION string
-
 // The main entrypoint for Terragrunt
 func main() {
-	// Log the terragrunt version in debug mode. This helps with debugging issues and ensuring a specific version of
-	// terragrunt used.
-	util.GlobalFallbackLogEntry.Debugf("Terragrunt Version: %s", VERSION)
+	var exitCode tf.DetailedExitCode
 
-	defer errors.Recover(checkForErrorsAndExit)
+	opts := options.NewTerragruntOptions()
 
-	app := cli.CreateTerragruntCli(VERSION, os.Stdout, os.Stderr)
-	err := app.Run(os.Args)
+	l := log.New(
+		log.WithOutput(opts.ErrWriter),
+		log.WithLevel(options.DefaultLogLevel),
+		log.WithFormatter(format.NewFormatter(format.NewPrettyFormatPlaceholders())),
+	)
 
-	checkForErrorsAndExit(err)
+	// Immediately parse the `TG_LOG_LEVEL` environment variable, e.g. to set the TRACE level.
+	if err := global.NewLogLevelFlag(l, opts, nil).Parse(os.Args); err != nil {
+		l.Error(err.Error())
+		os.Exit(1)
+	}
+
+	defer errors.Recover(checkForErrorsAndExit(l, exitCode.Get()))
+
+	app := cli.NewApp(l, opts)
+
+	ctx := setupContext(l, &exitCode)
+	err := app.RunContext(ctx, os.Args)
+
+	checkForErrorsAndExit(l, exitCode.Get())(err)
 }
 
 // If there is an error, display it in the console and exit with a non-zero exit code. Otherwise, exit 0.
-func checkForErrorsAndExit(err error) {
-	if err == nil {
-		os.Exit(0)
-	} else {
-		util.GlobalFallbackLogEntry.Debugf(errors.PrintErrorWithStackTrace(err))
-		util.GlobalFallbackLogEntry.Errorf(err.Error())
+func checkForErrorsAndExit(logger log.Logger, exitCode int) func(error) {
+	return func(err error) {
+		if err == nil {
+			os.Exit(exitCode)
+		} else {
+			logger.Error(err.Error())
 
-		// exit with the underlying error code
-		exitCode, exitCodeErr := shell.GetExitCode(err)
-		if exitCodeErr != nil {
-			exitCode = 1
-			util.GlobalFallbackLogEntry.Errorf("Unable to determine underlying exit code, so Terragrunt will exit with error code 1")
+			if errStack := errors.ErrorStack(err); errStack != "" {
+				logger.Trace(errStack)
+			}
+
+			// exit with the underlying error code
+			exitCoder, exitCodeErr := util.GetExitCode(err)
+			if exitCodeErr != nil {
+				exitCoder = 1
+
+				logger.Errorf("Unable to determine underlying exit code, so Terragrunt will exit with error code 1")
+			}
+
+			if explain := shell.ExplainError(err); len(explain) > 0 {
+				logger.Errorf("Suggested fixes: \n%s", explain)
+			}
+
+			os.Exit(exitCoder)
 		}
-		if explain := shell.ExplainError(err); len(explain) > 0 {
-			util.GlobalFallbackLogEntry.Errorf("Suggested fixes: \n%s", explain)
-		}
-		os.Exit(exitCode)
 	}
+}
 
+func setupContext(l log.Logger, exitCode *tf.DetailedExitCode) context.Context {
+	ctx := context.Background()
+	ctx = tf.ContextWithDetailedExitCode(ctx, exitCode)
+
+	return log.ContextWithLogger(ctx, l)
 }

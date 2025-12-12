@@ -1,6 +1,8 @@
+//nolint:gocritic
 package util
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
@@ -8,7 +10,8 @@ import (
 func ParseTimestamp(ts string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339, ts)
 	if err != nil {
-		switch err := err.(type) {
+		// TODO: Remove this lint suppression
+		switch err := err.(type) { //nolint:errorlint
 		case *time.ParseError:
 			// If err is a time.ParseError then its string representation is not
 			// appropriate since it relies on details of Go's strange date format
@@ -25,7 +28,9 @@ func ParseTimestamp(ts string) (time.Time, error) {
 				// by the time package.
 				return time.Time{}, fmt.Errorf("not a valid RFC3339 timestamp%s", err.Message)
 			}
+
 			var what string
+
 			switch err.LayoutElem {
 			case "2006":
 				what = "year"
@@ -42,7 +47,7 @@ func ParseTimestamp(ts string) (time.Time, error) {
 			case "Z07:00":
 				what = "UTC offset"
 			case "T":
-				return time.Time{}, fmt.Errorf("not a valid RFC3339 timestamp: missing required time introducer 'T'")
+				return time.Time{}, errors.New("not a valid RFC3339 timestamp: missing required time introducer 'T'")
 			case ":", "-":
 				if err.ValueElem == "" {
 					return time.Time{}, fmt.Errorf("not a valid RFC3339 timestamp: end of string where %q is expected", err.LayoutElem)
@@ -55,13 +60,16 @@ func ParseTimestamp(ts string) (time.Time, error) {
 				// be robust here.
 				what = "timestamp segment"
 			}
+
 			if err.ValueElem == "" {
 				return time.Time{}, fmt.Errorf("not a valid RFC3339 timestamp: end of string before %s", what)
 			} else {
 				return time.Time{}, fmt.Errorf("not a valid RFC3339 timestamp: cannot use %q as %s", err.ValueElem, what)
 			}
 		}
+
 		return time.Time{}, err
 	}
+
 	return t, nil
 }
