@@ -34,9 +34,10 @@ require (
 	github.com/hashicorp/go-version v1.7.0
 	github.com/hashicorp/hcl/v2 v2.24.0
 
-	// Many functions of terraform was converted to internal to avoid use as a library after v0.15.3. This means that we
-	// can't use terraform as a library after v0.15.3, so we pull that in here.
-	github.com/hashicorp/terraform v0.15.3
+	// Many functions of terraform were moved to internal/ after v0.15.3 to prevent its use as a library. To keep
+	// importing lang/, tfdiags/, and command/cliconfig/ on newer versions we use the cycloidio/terraform fork, which
+	// re-exposes those packages at the top level. See the replace directive below.
+	github.com/hashicorp/terraform v1.13.5
 	github.com/hashicorp/terraform-svchost v0.1.1
 	github.com/huandu/go-clone v1.7.3
 	github.com/labstack/echo/v4 v4.13.4
@@ -236,11 +237,12 @@ require (
 	github.com/hashicorp/go-rootcerts v1.0.2 // indirect
 	github.com/hashicorp/go-secure-stdlib/parseutil v0.2.0 // indirect
 	github.com/hashicorp/go-secure-stdlib/strutil v0.1.2 // indirect
+	github.com/hashicorp/go-slug v0.16.3 // indirect
 	github.com/hashicorp/go-sockaddr v1.0.7 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/hashicorp/hcl v1.0.1-vault-7 // indirect
 	github.com/hashicorp/logutils v1.0.0 // indirect
-	github.com/hashicorp/terraform-registry-address v0.2.4 // indirect
+	github.com/hashicorp/terraform-registry-address v0.3.0 // indirect
 	github.com/hashicorp/vault/api v1.22.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
@@ -270,7 +272,6 @@ require (
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-testing-interface v1.14.1 // indirect
-	github.com/mitchellh/panicwrap v1.0.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.1.0 // indirect
@@ -354,9 +355,10 @@ replace (
 	atomicgo.dev/cursor => github.com/atomicgo/cursor v0.2.0
 	atomicgo.dev/keyboard => github.com/atomicgo/keyboard v0.2.9
 	atomicgo.dev/schedule => github.com/atomicgo/schedule v0.1.0
-	// Many functions of terraform was converted to internal to avoid use as a library after v0.15.3. This means that we
-	// can't use terraform as a library after v0.15.3, so we pull that in here.
-	github.com/hashicorp/terraform => github.com/hashicorp/terraform v0.15.3
+	// Many functions of terraform were moved to internal/ after v0.15.3 to prevent its use as a library. The
+	// cycloidio/terraform fork (cy-v1.13.5 branch, tagged v1.13.5-cy) re-exposes lang/, tfdiags/, and
+	// command/cliconfig/ at the top level so we can keep importing them.
+	github.com/hashicorp/terraform => github.com/cycloidio/terraform v1.13.5-cy
 
 	// This is necessary to workaround go modules error with terraform importing vault incorrectly.
 	// See https://github.com/hashicorp/vault/issues/7848 for more info
