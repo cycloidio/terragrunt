@@ -25,3 +25,7 @@ bin
 rsrc.syso
 resource.syso
 *.syso
+
+# Claude
+.claude/settings.local.json
+.claude/CLAUDE.local.md
