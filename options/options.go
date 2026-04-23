@@ -101,6 +101,10 @@ type TerragruntOptions struct {
 	Writer io.Writer
 	// If you want stderr to go somewhere other than os.stderr
 	ErrWriter io.Writer
+	// Logger is an optional logger attached to the options so that library consumers that do not thread
+	// a log.Logger alongside *TerragruntOptions can still retrieve one via Log(). Terragrunt's internal
+	// code keeps threading the logger as a parameter — this field is a convenience for external users.
+	Logger log.Logger `clone:"shadowcopy"`
 	// Version of terragrunt
 	TerragruntVersion *version.Version `clone:"shadowcopy"`
 	// FeatureFlags is a map of feature flags to enable.
@@ -333,10 +337,6 @@ type TerragruntOptions struct {
 	// mutating cloud resources. Hooks and lock-file copying are also skipped when DryRun is set, since
 	// they would otherwise operate on state produced by a command that did not run.
 	DryRun bool
-	// Logger is an optional logger attached to the options so that library consumers that do not thread
-	// a log.Logger alongside *TerragruntOptions can still retrieve one via Log(). Terragrunt's internal
-	// code keeps threading the logger as a parameter — this field is a convenience for external users.
-	Logger log.Logger `clone:"shadowcopy"`
 }
 
 // Log returns the logger attached to these options. If none has been set
