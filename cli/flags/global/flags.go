@@ -28,6 +28,7 @@ const (
 
 	NonInteractiveFlagName = "non-interactive"
 	WorkingDirFlagName     = "working-dir"
+	DryRunFlagName         = "dry-run"
 
 	// Strict Mode related flags.
 
@@ -62,6 +63,7 @@ const (
 	DeprecatedLogCustomFormatFlagName = "log-custom-format"
 	DeprecatedNoColorFlagName         = "no-color"
 	DeprecatedNonInteractiveFlagName  = "non-interactive"
+	DeprecatedDryRunFlagName          = "dry-run"
 	DeprecatedTFInputFlagName         = "tf-input"
 	DeprecatedWorkingDirFlagName      = "working-dir"
 	DeprecatedStrictModeFlagName      = "strict-mode"
@@ -165,6 +167,14 @@ func NewFlags(l log.Logger, opts *options.TerragruntOptions, prefix flags.Prefix
 				Negative: true,
 				EnvVars:  flags.Prefix{}.EnvVars(DeprecatedTFInputFlagName),
 			}, nil, terragruntPrefixControl)),
+
+		flags.NewFlag(&cli.BoolFlag{
+			Name:        DryRunFlagName,
+			EnvVars:     tgPrefix.EnvVars(DryRunFlagName),
+			Destination: &opts.DryRun,
+			Usage:       "Skip the actual OpenTofu/Terraform invocation. Useful for library consumers that drive Terragrunt for side-effect-free analysis (e.g. terracost).",
+		},
+			flags.WithDeprecatedEnvVars(terragruntPrefix.EnvVars(DeprecatedDryRunFlagName), terragruntPrefixControl)),
 
 		// Experiment Mode flags.
 

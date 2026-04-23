@@ -336,6 +336,17 @@ func runTerragruntWithConfig(
 		return err
 	}
 
+	// DryRun short-circuit: terracost and other library consumers enable this to drive Terragrunt through
+	// config parsing, dependency resolution, and source download without actually invoking tofu/terraform.
+	// We return nil before RunActionWithHooks so hooks do not fire either — they can have side effects of
+	// their own (shell commands, state writes). The !Headless guard avoids a duplicate log line that would
+	// otherwise appear during the internal auto-init pass.
+	if opts.DryRun && !opts.Headless {
+		l.Infof("Dry-run mode enabled: Terragrunt validation complete, skipping %s execution", opts.TerraformImplementation)
+
+		return nil
+	}
+
 	return RunActionWithHooks(ctx, l, "terraform", opts, cfg, r, func(ctx context.Context) error {
 		// Execute the underlying command once; retries and ignores are handled by outer RunWithErrorHandling
 		out, runTerraformError := tf.RunCommandWithOutput(ctx, l, opts, opts.TerraformCliArgs...)

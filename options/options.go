@@ -328,6 +328,26 @@ type TerragruntOptions struct {
 	NoShell bool
 	// NoHooks disables hooks when using boilerplate templates in catalog and scaffold commands.
 	NoHooks bool
+	// DryRun skips the actual OpenTofu/Terraform invocation so that external consumers (e.g. terracost)
+	// can drive Terragrunt through config parsing, dependency resolution, and module download without
+	// mutating cloud resources. Hooks and lock-file copying are also skipped when DryRun is set, since
+	// they would otherwise operate on state produced by a command that did not run.
+	DryRun bool
+	// Logger is an optional logger attached to the options so that library consumers that do not thread
+	// a log.Logger alongside *TerragruntOptions can still retrieve one via Log(). Terragrunt's internal
+	// code keeps threading the logger as a parameter — this field is a convenience for external users.
+	Logger log.Logger `clone:"shadowcopy"`
+}
+
+// Log returns the logger attached to these options. If none has been set
+// (the default for opts built by NewTerragruntOptions), it returns the
+// package-level default logger so callers never have to nil-check.
+func (opts *TerragruntOptions) Log() log.Logger {
+	if opts.Logger != nil {
+		return opts.Logger
+	}
+
+	return log.Default()
 }
 
 // TerragruntOptionsFunc is a functional option type used to pass options in certain integration tests
@@ -337,6 +357,15 @@ type TerragruntOptionsFunc func(*TerragruntOptions)
 func WithIAMRoleARN(arn string) TerragruntOptionsFunc {
 	return func(t *TerragruntOptions) {
 		t.IAMRoleOptions.RoleARN = arn
+	}
+}
+
+// WithLogger attaches a logger to the options so that library consumers can
+// later retrieve it via TerragruntOptions.Log() without threading it through
+// every call site.
+func WithLogger(l log.Logger) TerragruntOptionsFunc {
+	return func(t *TerragruntOptions) {
+		t.Logger = l
 	}
 }
 
