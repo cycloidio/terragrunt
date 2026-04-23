@@ -16,9 +16,21 @@ import (
 	"github.com/gruntwork-io/terragrunt/internal/component"
 	"github.com/gruntwork-io/terragrunt/internal/runner"
 	"github.com/gruntwork-io/terragrunt/internal/runner/common"
+	internalrun "github.com/gruntwork-io/terragrunt/internal/runner/run"
 	"github.com/gruntwork-io/terragrunt/options"
 	"github.com/gruntwork-io/terragrunt/pkg/log"
 )
+
+// Run is the default TerragruntOptions.RunTerragrunt dispatcher exposed for
+// external consumers. Stack.Run ultimately calls opts.RunTerragrunt for each
+// unit, and that field's signature references *report.Report from an internal
+// package — so library users cannot supply their own function literal. Pin
+// this to opts.RunTerragrunt before calling Stack.Run:
+//
+//	opts.RunTerragrunt = runner.Run
+//	stack, _ := runner.FindStackInSubfolders(ctx, l, opts)
+//	_ = stack.Run(ctx, l, opts)
+var Run = internalrun.Run
 
 // Stack is a collection of Terragrunt units discovered under a working
 // directory, together with a runner capable of executing them.
